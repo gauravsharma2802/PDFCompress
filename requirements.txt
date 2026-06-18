@@ -1,0 +1,4 @@
+flask==3.1.1
+gunicorn==23.0.0
+pikepdf==9.7.0
+Pillow==11.2.1

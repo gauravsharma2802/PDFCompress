@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Compressor</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>PDF Compressor</h1>
+        <p class="subtitle">Upload one or more ZIP files of PDFs. JBIG2 compression reduces file sizes by up to 93%.</p>
+
+        {% if dep_error %}
+        <div class="error-banner">
+            <strong>Server Error:</strong> {{ dep_error }}
+        </div>
+        {% endif %}
+
+        <!-- Upload Phase -->
+        <div id="upload-section">
+            <div id="drop-zone" class="drop-zone">
+                <div class="drop-zone-content">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    <p>Drag & drop ZIP files here</p>
+                    <p class="drop-zone-hint">or click to browse (multiple allowed, max 500 MB each)</p>
+                </div>
+                <input type="file" id="file-input" accept=".zip" multiple hidden>
+            </div>
+            <div id="file-list" class="file-list" hidden></div>
+            <button id="upload-btn" class="btn btn-primary" disabled>Upload & Compress</button>
+        </div>
+
+        <!-- Upload Progress -->
+        <div id="uploading-section" hidden>
+            <p class="status-text">Uploading...</p>
+            <div class="progress-bar">
+                <div id="upload-progress" class="progress-fill"></div>
+            </div>
+        </div>
+
+        <!-- Compression Progress -->
+        <div id="processing-section" hidden>
+            <p class="status-text">Compressing PDFs...</p>
+            <p id="zip-status" class="progress-label"></p>
+            <div class="progress-bar">
+                <div id="process-progress" class="progress-fill"></div>
+            </div>
+            <p id="process-status" class="progress-label">Starting...</p>
+        </div>
+
+        <!-- Results -->
+        <div id="results-section" hidden>
+            <h2>Compression Complete</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-original">-</div>
+                    <div class="stat-label">Original Size</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-compressed">-</div>
+                    <div class="stat-label">Compressed Size</div>
+                </div>
+                <div class="stat-card highlight">
+                    <div class="stat-value" id="stat-reduction">-</div>
+                    <div class="stat-label">Reduction</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="stat-pdfs">-</div>
+                    <div class="stat-label">PDFs Processed</div>
+                </div>
+            </div>
+            <p id="stat-zips" class="zip-count-label"></p>
+            <div class="actions">
+                <a id="download-btn" class="btn btn-primary" href="#">Download Compressed ZIP</a>
+                <button id="reset-btn" class="btn btn-secondary">Compress More</button>
+            </div>
+        </div>
+
+        <!-- Error -->
+        <div id="error-section" hidden>
+            <div class="error-banner">
+                <strong>Error:</strong> <span id="error-message"></span>
+            </div>
+            <button id="error-reset-btn" class="btn btn-secondary">Try Again</button>
+        </div>
+    </div>
+
+    <script>
+    (function() {
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const fileList = document.getElementById('file-list');
+        const uploadBtn = document.getElementById('upload-btn');
+
+        const uploadSection = document.getElementById('upload-section');
+        const uploadingSection = document.getElementById('uploading-section');
+        const uploadProgress = document.getElementById('upload-progress');
+        const processingSection = document.getElementById('processing-section');
+        const processProgress = document.getElementById('process-progress');
+        const processStatus = document.getElementById('process-status');
+        const zipStatus = document.getElementById('zip-status');
+        const resultsSection = document.getElementById('results-section');
+        const errorSection = document.getElementById('error-section');
+        const errorMessage = document.getElementById('error-message');
+
+        let selectedFiles = [];
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(1024));
+            return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
+        }
+
+        // Drag and drop
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('drag-over');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('drag-over');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            const files = Array.from(e.dataTransfer.files);
+            if (files.length > 0) addFiles(files);
+        });
+
+        fileInput.addEventListener('change', () => {
+            const files = Array.from(fileInput.files);
+            if (files.length > 0) addFiles(files);
+        });
+
+        function addFiles(files) {
+            for (const file of files) {
+                if (!file.name.toLowerCase().endsWith('.zip')) {
+                    showError("'" + file.name + "' is not a ZIP file. Only ZIP files are accepted.");
+                    return;
+                }
+                // Avoid duplicates by name
+                if (!selectedFiles.some(f => f.name === file.name && f.size === file.size)) {
+                    selectedFiles.push(file);
+                }
+            }
+            renderFileList();
+        }
+
+        function renderFileList() {
+            if (selectedFiles.length === 0) {
+                fileList.hidden = true;
+                dropZone.hidden = false;
+                uploadBtn.disabled = true;
+                return;
+            }
+
+            fileList.hidden = false;
+            dropZone.hidden = true;
+            uploadBtn.disabled = false;
+
+            let totalSize = selectedFiles.reduce((sum, f) => sum + f.size, 0);
+            let html = '<div class="file-list-header">' +
+                '<span>' + selectedFiles.length + ' file' + (selectedFiles.length > 1 ? 's' : '') +
+                ' (' + formatBytes(totalSize) + ' total)</span>' +
+                '<button class="btn-text" id="clear-all" title="Remove all">&times;</button></div>';
+
+            selectedFiles.forEach((file, idx) => {
+                html += '<div class="file-item">' +
+                    '<span class="file-item-name">' + file.name + '</span>' +
+                    '<span class="file-item-size">' + formatBytes(file.size) + '</span>' +
+                    '<button class="btn-text file-remove" data-idx="' + idx + '">&times;</button>' +
+                    '</div>';
+            });
+
+            html += '<button class="btn-text add-more" id="add-more-btn">+ Add more files</button>';
+            fileList.innerHTML = html;
+
+            document.getElementById('clear-all').addEventListener('click', () => {
+                selectedFiles = [];
+                fileInput.value = '';
+                renderFileList();
+            });
+
+            document.getElementById('add-more-btn').addEventListener('click', () => {
+                fileInput.value = '';
+                fileInput.click();
+            });
+
+            fileList.querySelectorAll('.file-remove').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const idx = parseInt(btn.getAttribute('data-idx'));
+                    selectedFiles.splice(idx, 1);
+                    fileInput.value = '';
+                    renderFileList();
+                });
+            });
+        }
+
+        // Upload
+        uploadBtn.addEventListener('click', () => {
+            if (selectedFiles.length === 0) return;
+            uploadFiles(selectedFiles);
+        });
+
+        function uploadFiles(files) {
+            showSection('uploading');
+
+            const formData = new FormData();
+            files.forEach(f => formData.append('files', f));
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/upload');
+
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const pct = (e.loaded / e.total) * 100;
+                    uploadProgress.style.width = pct + '%';
+                }
+            });
+
+            xhr.addEventListener('load', () => {
+                let data;
+                try {
+                    data = JSON.parse(xhr.responseText);
+                } catch {
+                    showError('Invalid server response');
+                    return;
+                }
+
+                if (xhr.status !== 200) {
+                    showError(data.error || 'Upload failed');
+                    return;
+                }
+
+                startProcessing(data.job_id, data.zip_count);
+            });
+
+            xhr.addEventListener('error', () => {
+                showError('Upload failed. Check your connection.');
+            });
+
+            xhr.send(formData);
+        }
+
+        // Processing via SSE
+        function startProcessing(jobId, zipCount) {
+            showSection('processing');
+            processProgress.style.width = '0%';
+            processStatus.textContent = 'Starting compression...';
+            zipStatus.textContent = '';
+
+            const evtSource = new EventSource('/process/' + jobId);
+
+            evtSource.addEventListener('message', (e) => {
+                let data;
+                try {
+                    data = JSON.parse(e.data);
+                } catch {
+                    return;
+                }
+
+                if (data.type === 'zip_start') {
+                    if (data.zip_count > 1) {
+                        zipStatus.textContent = 'ZIP ' + data.zip_index + ' of ' + data.zip_count + ': ' + data.zip_name;
+                    }
+                } else if (data.type === 'progress') {
+                    const pct = (data.current / data.total) * 100;
+                    processProgress.style.width = pct + '%';
+                    let label = 'PDF ' + data.current + ' of ' + data.total + ': ' + data.filename;
+                    if (data.zip_count > 1) {
+                        zipStatus.textContent = 'ZIP ' + data.zip_index + ' of ' + data.zip_count + ': ' + data.zip_name;
+                    }
+                    processStatus.textContent = label;
+                } else if (data.type === 'complete') {
+                    evtSource.close();
+                    showResults(data, jobId);
+                } else if (data.type === 'error') {
+                    evtSource.close();
+                    showError(data.message);
+                }
+            });
+
+            evtSource.addEventListener('error', () => {
+                evtSource.close();
+                showError('Connection lost during processing.');
+            });
+        }
+
+        // Results
+        function showResults(data, jobId) {
+            showSection('results');
+
+            document.getElementById('stat-original').textContent = formatBytes(data.original_bytes);
+            document.getElementById('stat-compressed').textContent = formatBytes(data.compressed_bytes);
+
+            let reduction = 0;
+            if (data.original_bytes > 0) {
+                reduction = ((1 - data.compressed_bytes / data.original_bytes) * 100).toFixed(1);
+            }
+            document.getElementById('stat-reduction').textContent = reduction + '%';
+
+            let pdfsText = data.compressed_pdfs + ' compressed';
+            if (data.skipped_pdfs > 0) pdfsText += ', ' + data.skipped_pdfs + ' skipped';
+            if (data.failed_pdfs > 0) pdfsText += ', ' + data.failed_pdfs + ' failed';
+            document.getElementById('stat-pdfs').textContent = pdfsText;
+
+            const zipsLabel = document.getElementById('stat-zips');
+            if (data.zip_count > 1) {
+                zipsLabel.textContent = data.zip_count + ' ZIP files processed';
+            } else {
+                zipsLabel.textContent = '';
+            }
+
+            document.getElementById('download-btn').href = '/download/' + jobId;
+        }
+
+        // Error handling
+        function showError(msg) {
+            showSection('error');
+            errorMessage.textContent = msg;
+        }
+
+        // Section management
+        function showSection(name) {
+            uploadSection.hidden = name !== 'upload';
+            uploadingSection.hidden = name !== 'uploading';
+            processingSection.hidden = name !== 'processing';
+            resultsSection.hidden = name !== 'results';
+            errorSection.hidden = name !== 'error';
+        }
+
+        // Reset
+        function reset() {
+            selectedFiles = [];
+            fileInput.value = '';
+            fileList.hidden = true;
+            fileList.innerHTML = '';
+            dropZone.hidden = false;
+            uploadBtn.disabled = true;
+            uploadProgress.style.width = '0%';
+            processProgress.style.width = '0%';
+            showSection('upload');
+        }
+
+        document.getElementById('reset-btn').addEventListener('click', reset);
+        document.getElementById('error-reset-btn').addEventListener('click', reset);
+    })();
+    </script>
+</body>
+</html>
